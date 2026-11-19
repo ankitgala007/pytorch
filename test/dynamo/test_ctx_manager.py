@@ -23,7 +23,7 @@ from torch.nn import functional as F
 from torch.testing._internal.common_cuda import PLATFORM_SUPPORTS_FLASH_ATTENTION
 from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
-	onlyAccelerator,
+    onlyAccelerator,
     onlyCUDA,
 )
 from torch.testing._internal.common_utils import (
@@ -31,7 +31,10 @@ from torch.testing._internal.common_utils import (
     parametrize,
 )
 from torch.testing._internal.inductor_utils import GPU_TYPE
-from torch.testing._internal.triton_utils import requires_cuda_and_triton, requires_gpu_and_triton
+from torch.testing._internal.triton_utils import (
+    requires_cuda_and_triton, 
+    requires_gpu_and_triton,
+)
 
 device_type = acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
 
@@ -2605,8 +2608,12 @@ class AcceleratorCtxManagerTests(torch._dynamo.test_case.TestCase):
         torch.accelerator.synchronize()
         self.assertEqual(outer, torch.full((16,), 5.0, device=GPU_TYPE))
         self.assertEqual(inner, torch.full((16,), 3.0, device=GPU_TYPE))
-        self.assertGreater(len(torch.accelerator.memory.memory_snapshot(outer_pool.id)), 0)
-        self.assertGreater(len(torch.accelerator.memory.memory_snapshot(inner_pool.id)), 0)
+        self.assertGreater(
+            len(torch.accelerator.memory.memory_snapshot(outer_pool.id)), 0
+        )
+        self.assertGreater(
+            len(torch.accelerator.memory.memory_snapshot(inner_pool.id)), 0
+        )
         self.assertEqual(outer_pool.use_count(), 1)
         self.assertEqual(inner_pool.use_count(), 1)
 
@@ -2685,19 +2692,23 @@ class AcceleratorCtxManagerTests(torch._dynamo.test_case.TestCase):
                 )
                 torch.accelerator.synchronize()
                 self.assertEqual(actual, expected)
-                self.assertGreater(len(torch.accelerator.memory.memory_snapshot(pool.id)), 0)
+                self.assertGreater(
+                    len(torch.accelerator.memory.memory_snapshot(pool.id)), 0
+                )
                 self.assertEqual(pool.use_count(), 1)
 
                 source = "\n".join(source_codes)
                 # The compiled wrapper deliberately normalizes to pool-outer,
                 # stream-inner ordering so allocators with set_context/pop_context
                 # side effects see a consistent pool lifetime.
-                mempool_enter = source.index("with torch.get_device_module(GPU_TYPE).use_mem_pool(")
+                mempool_enter = source.index(
+                    "with torch.get_device_module(GPU_TYPE).use_mem_pool("
+                )
                 stream_enter = source.index("with stream")
                 self.assertLess(mempool_enter, stream_enter)
 
     @requires_gpu_and_triton
-    @unittest.skipIf(torch.device_count() < 2, "requires multiple cuda devices")
+    @unittest.skipIf(torch.accelerator.device_count() < 2, "requires multiple cuda devices")
     def test_accelerator_use_mem_pool_device_none_resolves_at_entry_inductor(self):
         torch.accelerator.empty_cache()
 
@@ -2735,7 +2746,9 @@ class AcceleratorCtxManagerTests(torch._dynamo.test_case.TestCase):
                 return torch.ones(1, device=GPU_TYPE)
 
         def duplicate_device(pool):
-            with torch.get_device_module(GPU_TYPE).use_mem_pool(pool, None, device=None):
+            with torch.get_device_module(GPU_TYPE).use_mem_pool(
+                pool, None, device=None
+            ):
                 return torch.ones(1, device=GPU_TYPE)
 
         cases = [
@@ -3134,7 +3147,9 @@ class AcceleratorCtxManagerTests(torch._dynamo.test_case.TestCase):
         initial_dev = torch.get_device_module(GPU_TYPE).current_device()
         for args, kwargs in (((), ()), ((0, 0), ()), ((), ("kwarg",))):
             self.assertRaises(torch._dynamo.exc.Unsupported, fn, args, kwargs)
-            self.assertEqual(torch.get_device_module(GPU_TYPE).current_device(), initial_dev)
+            self.assertEqual(
+                torch.get_device_module(GPU_TYPE).current_device(), initial_dev
+            )
 
     @unittest.skipIf(not torch.accelerator.is_available(), "requires accelerator")
     def test_autocast(self):
