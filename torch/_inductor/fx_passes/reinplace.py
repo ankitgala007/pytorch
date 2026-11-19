@@ -12,7 +12,7 @@ import torch
 import torch.fx.node
 from torch._C._dynamo.guards import compute_overlapping_tensors
 from torch._dispatch.python import enable_python_dispatcher
-from torch._dynamo.utils import ReinplaceCounters, ReInplaceTrigger
+from torch._dynamo.utils import counters, ReinplaceCounters, ReInplaceTrigger
 from torch._guards import detect_fake_mode
 from torch._higher_order_ops.user_kernel_hop import (
     get_user_kernel_hop_info,
@@ -247,6 +247,71 @@ def should_reinplace_index_put(node: torch.fx.Node) -> bool:
     )
 
 
+# Ops that return a freshly allocated tensor, which no graph input can alias.
+_FRESH_ALLOCATION_OPS = OrderedSet(
+    [
+        aten.empty.memory_format,
+        aten.empty_strided.default,
+        aten.empty_like.default,
+        aten.new_empty.default,
+        aten.new_empty_strided.default,
+        aten.zeros.default,
+        aten.zeros_like.default,
+        aten.new_zeros.default,
+        aten.ones.default,
+        aten.ones_like.default,
+        aten.new_ones.default,
+        aten.full.default,
+        aten.full_like.default,
+        aten.new_full.default,
+    ]
+)
+
+
+def _auto_functionalized_v2_input_base(node: object) -> torch.fx.Node | None:
+    """The _all_bases input that node is the updated copy of, if node is one of
+    the updated bases auto_functionalized_v2 returns after its op's own
+    outputs, else None."""
+    if not (isinstance(node, torch.fx.Node) and node.target is operator.getitem):
+        return None
+    af, index = node.args
+    if not (
+        isinstance(af, torch.fx.Node)
+        and af.target is torch.ops.higher_order.auto_functionalized_v2
+        and isinstance(index, int)
+    ):
+        return None
+    outputs = af.meta.get("val")
+    bases = af.kwargs.get("_all_bases", ())
+    if not isinstance(outputs, (tuple, list)) or not isinstance(bases, (tuple, list)):
+        return None
+    base_index = index - (len(outputs) - len(bases))
+    if base_index < 0:
+        return None
+    base = bases[base_index]
+    return base if isinstance(base, torch.fx.Node) else None
+
+
+def _is_auto_functionalized_v2_base(node: object) -> bool:
+    """True if node is an updated base of auto_functionalized_v2 whose storage
+    is a fresh allocation in this graph.
+
+    Reinplacing an auto_functionalized_v2 node makes its updated bases the
+    input bases themselves, possibly through a chain of such nodes and views.
+    If that chain ends at a graph input, or at anything else that may itself
+    be reinplaced into one, the input's epilogue copy_ runs after the scatter.
+    can_inplace() judges the getitem's own (cloned) fake storage and cannot see
+    this, so only a chain that ends at a fresh allocation qualifies.
+    """
+    base = _auto_functionalized_v2_input_base(node)
+    if base is None:
+        return False
+    root = _get_view_base(base)
+    while (base := _auto_functionalized_v2_input_base(root)) is not None:
+        root = _get_view_base(base)
+    return root.op == "call_function" and root.target in _FRESH_ALLOCATION_OPS
+
+
 def should_reinplace_scatter(node: torch.fx.Node) -> bool:
     """Choose between mutating and functional scatter decompositions
 
@@ -270,6 +335,14 @@ def should_reinplace_scatter(node: torch.fx.Node) -> bool:
         return True
 
     if is_node_realized(inp) and is_node_realized(node):  # type: ignore[arg-type]
+        return True
+
+    # is_node_realized() does not count the updated bases of
+    # auto_functionalized_v2 as buffers, but the op has written them in place,
+    # so a functional scatter would copy the whole base to update one region.
+    if is_node_realized(node) and _is_auto_functionalized_v2_base(inp):
+        counters["inductor"]["reinplace_mutated_base_scatter"] += 1
+        log.debug("reinplacing scatter %s into an auto_functionalized_v2 base", node)
         return True
 
     # If the output is copied back into the input, this forces both to be
