@@ -1030,6 +1030,20 @@ def _should_use_flydsl_all_gather_matmul(
     return _fused_flydsl.ag_supported(A_shard, Bs, gather_dim, group_name)
 
 
+def _should_use_flydsl_matmul_reduce_scatter(
+    A: torch.Tensor,
+    B: torch.Tensor,
+    reduce_op: str,
+    scatter_dim: int,
+    group_name: c10d.GroupName,
+) -> bool:
+    if not _flydsl_async_tp_enabled():
+        return False
+    from torch.distributed._symmetric_memory import _fused_flydsl
+
+    return _fused_flydsl.rs_supported(A, B, reduce_op, scatter_dim, group_name)
+
+
 # Each 256-row M tile of the ROCm _async_input_mm waits on one chunk's signal,
 # so each rank's chunk must be a whole number of tiles.
 _ROCM_ASYNC_MM_TILE_M = 256
@@ -1440,6 +1454,15 @@ def _fused_matmul_reduce_scatter(
     """
     if _is_test_mode:
         return _fused_matmul_reduce_scatter_fallback(
+            A, B, reduce_op, scatter_dim, group_name
+        )
+
+    if _should_use_flydsl_matmul_reduce_scatter(
+        A, B, reduce_op, scatter_dim, group_name
+    ):
+        from torch.distributed._symmetric_memory import _fused_flydsl
+
+        return _fused_flydsl.matmul_reduce_scatter(
             A, B, reduce_op, scatter_dim, group_name
         )
 
