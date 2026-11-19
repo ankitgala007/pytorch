@@ -1210,6 +1210,30 @@ if cxx_pytree.tree_leaves(foo) != [foo]:
         ):
             python_pytree.treespec_loads(json.dumps([protocol, node]))
 
+    @parametrize(
+        "value,reason",
+        [
+            subtest(((0, {TestEnum.A: 0}), "module of an enum"), name="enum"),
+            subtest(
+                ((0, defaultdict(list, a=[0])), "module of a defaultdict factory"),
+                name="defaultdict",
+            ),
+        ],
+    )
+    def test_pytree_loads_without_imports(self, value, reason):
+        # Loading an enum or a defaultdict factory imports its module.
+        serialized = python_pytree.treespec_dumps(python_pytree.tree_structure(value))
+        self.assertEqual(
+            python_pytree.treespec_loads(serialized),
+            python_pytree.tree_structure(value),
+        )
+        with self.assertRaisesRegex(ValueError, reason):
+            python_pytree._treespec_loads_without_imports(serialized)
+
+    def test_pytree_loads_without_imports_unknown_protocol(self):
+        with self.assertRaisesRegex(ValueError, "Unknown protocol 2"):
+            python_pytree._treespec_loads_without_imports("[2, null]")
+
     def test_pytree_custom_type_serialize_bad(self):
         class DummyType:
             def __init__(self, x, y):
