@@ -2095,6 +2095,17 @@ if(BUILD_MOBILE_BENCHMARK)
   endforeach()
 endif()
 
+# The vec tests compare vectorized code and scalar references compiled in the
+# same file, often from the same source (e.g. complex division): contracting
+# them into FMAs differently would round them differently. This also applies
+# to the vectorized code under test, which is inlined, unlike in kernels, which
+# keep the compiler's default.
+if(NOT MSVC)
+  set_property(
+    SOURCE ${TORCH_ROOT}/aten/src/ATen/test/vec_test_all_types.cpp
+    APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
+endif()
+
 if(BUILD_MOBILE_TEST)
   foreach(test_src ${ATen_MOBILE_TEST_SRCS})
     get_filename_component(test_name ${test_src} NAME_WE)
