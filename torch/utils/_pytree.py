@@ -919,6 +919,11 @@ def _namedtuple_deserialize(dumpable_context: DumpableContext) -> Context:
         )
 
     typ = SERIALIZED_TYPE_TO_PYTHON_TYPE[dumpable_context]
+    if not is_namedtuple_class(typ):
+        raise NotImplementedError(
+            f"Can't deserialize TreeSpec of namedtuple class {dumpable_context} "
+            f"because it names {typ}, which is not a namedtuple class."
+        )
     return typ
 
 
