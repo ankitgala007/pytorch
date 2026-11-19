@@ -10,6 +10,7 @@
 #include <c10/cuda/CUDAFunctions.h>
 #include <c10/cuda/CUDAGraphMemory.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <c10/util/ScopeExit.h>
 #include <c10/util/flat_hash_map.h>
 
 #include <cstddef>
@@ -364,10 +365,40 @@ void CUDAGraph::capture_end() {
 void CUDAGraph::instantiate() {
   TORCH_CHECK(capture_ended_, "capture_end() must have been called before calling instantiate");
 
+  cudaGraphExec_t old_graph_exec = nullptr;
   if (has_graph_exec_) {
     TORCH_CHECK(keep_graph_, "instantiate() is intended to be called by the user only when keep_graph=true");
-    AT_CUDA_CHECK(cudaGraphExecDestroy(graph_exec_));
+#if !defined(USE_ROCM)
+    int driver_version = 0;
+    AT_CUDA_CHECK(cudaDriverGetVersion(&driver_version));
+    if (driver_version == 13050) {
+      // CUDA 13.5 HES can misclassify nodes when reusing freed exec storage.
+      // Keeping the old exec alive protects the first reinstantiation only;
+      // later ones can still reuse storage freed by earlier execs.
+      old_graph_exec = graph_exec_;
+    }
+#endif
+    if (old_graph_exec == nullptr) {
+      AT_CUDA_CHECK(cudaGraphExecDestroy(graph_exec_));
+      graph_exec_ = nullptr;
+      has_graph_exec_ = false;
+    }
   }
+  cudaGraphExec_t new_graph_exec = nullptr;
+  auto cleanup_new_exec = c10::make_scope_exit([&] {
+    if (new_graph_exec != nullptr) {
+      C10_CUDA_CHECK_WARN(cudaGraphExecDestroy(new_graph_exec));
+    }
+  });
+  auto destroy_old_exec = [&] {
+    const auto err = C10_CUDA_ERROR_HANDLED(cudaGraphExecDestroy(old_graph_exec));
+    if (err == cudaSuccess) {
+      old_graph_exec = nullptr;
+      graph_exec_ = nullptr;
+      has_graph_exec_ = false;
+    }
+    AT_CUDA_CHECK(err);
+  };
   // In typical graph usage some tensors (e.g. the tensors used for graph IO) are not freed
   // between replays.
   // If Pytorch compiles and runs with a CUDA 11.4+ toolkit, there's a chance the allocator backend
@@ -379,16 +410,33 @@ void CUDAGraph::instantiate() {
   // https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__GRAPH.html#group__CUDART__GRAPH_1g1accfe1da0c605a577c22d9751a09597
   // cudaGraphInstantiateWithFlags
   // https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__GRAPH.html#group__CUDART__GRAPH_1ga2c652a24ba93e52b99a47bec0888233
+  auto instantiate_graph = [&] {
 #if !defined(USE_ROCM)
-    AT_CUDA_CHECK(cudaGraphInstantiateWithFlags(&graph_exec_,
+    return C10_CUDA_ERROR_HANDLED(cudaGraphInstantiateWithFlags(&new_graph_exec,
                                                 graph_,
                                                 cudaGraphInstantiateFlagAutoFreeOnLaunch | cudaGraphInstantiateFlagUseNodePriority));
 #else
-    AT_CUDA_CHECK(cudaGraphInstantiateWithFlags(&graph_exec_,
+    return C10_CUDA_ERROR_HANDLED(cudaGraphInstantiateWithFlags(&new_graph_exec,
                                                 graph_,
                                                 cudaGraphInstantiateFlagAutoFreeOnLaunch));
 #endif
+  };
+  auto err = instantiate_graph();
+  if (old_graph_exec != nullptr &&
+      (err == cudaErrorInvalidValue || err == cudaErrorNotSupported)) {
+    // Allocation/free, conditional, and device-updatable nodes only allow one
+    // live executable. Retry in the original order; other invalid graphs still fail.
+    C10_CUDA_CLEAR_ERROR();
+    destroy_old_exec();
+    err = instantiate_graph();
+  }
+  AT_CUDA_CHECK(err);
+  if (old_graph_exec != nullptr) {
+    destroy_old_exec();
+  }
+  graph_exec_ = new_graph_exec;
   has_graph_exec_ = true;
+  cleanup_new_exec.release();
 }
 
 std::vector<at::Tensor> CUDAGraph::get_rng_state_buffers() const {
