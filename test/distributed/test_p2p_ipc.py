@@ -149,7 +149,13 @@ class P2PIpcTest(MultiProcContinuousTest):
             func, args = tensor_meta
             args = list(args)
             args[6] = self.rank
-            tensor = func(*args)
+            try:
+                tensor = func(*args)
+            except BaseException:
+                import traceback
+
+                traceback.print_exc()
+                raise
 
         torch.distributed.barrier()
 
