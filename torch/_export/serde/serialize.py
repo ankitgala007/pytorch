@@ -3325,15 +3325,13 @@ class GraphModuleDeserializer(metaclass=Final):
         self,
         meta_val,
         fx_node: torch.fx.Node,
-        arg: TensorArgument | SymIntArgument | SymFloatArgument,
+        arg: TensorArgument | SymIntArgument | SymFloatArgument | SymBoolArgument,
         idx: int,
         deserialized_metadata: dict[str, Any],
     ):
         if isinstance(arg, TensorArgument):
             name = arg.name
-        elif isinstance(arg, SymIntArgument):
-            name = arg.as_name
-        elif isinstance(arg, SymFloatArgument):
+        elif isinstance(arg, (SymIntArgument, SymFloatArgument, SymBoolArgument)):
             name = arg.as_name
         else:
             raise AssertionError(
@@ -3367,7 +3365,7 @@ class GraphModuleDeserializer(metaclass=Final):
 
             if not isinstance(arg, Argument):
                 raise AssertionError(f"expected Argument, got {type(arg).__name__}")
-            if arg.type in ("as_tensor", "as_sym_int", "as_sym_float"):
+            if arg.type in ("as_tensor", "as_sym_int", "as_sym_float", "as_sym_bool"):
                 self.generate_getitem(
                     meta_val, fx_node, arg.value, idx, deserialized_metadata
                 )

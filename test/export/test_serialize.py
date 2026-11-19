@@ -1167,6 +1167,27 @@ class TestDeserialize(_DeserializeGraphMixin, TestCase):
         self.assertFalse(is_concrete_int(loaded_constant.shape[0]))
         self.assertEqual(loaded_constant.shape[1], 3)
 
+    def test_custom_op_tensor_and_bool_outputs(self):
+        # Load reads every result of a node with several results, also a bool.
+        with torch.library._scoped_library("mylib", "FRAGMENT") as lib:
+            torch.library.define(
+                "mylib::with_flag",
+                "(Tensor x) -> (Tensor, bool)",
+                tags=torch.Tag.pt2_compliant_tag,
+                lib=lib,
+            )
+
+            @torch.library.impl("mylib::with_flag", "cpu", lib=lib)
+            @torch.library.register_fake("mylib::with_flag", lib=lib)
+            def with_flag_impl(x):
+                return x * 2, True
+
+            class M(torch.nn.Module):
+                def forward(self, x):
+                    return torch.ops.mylib.with_flag(x)[0] + 1
+
+            self.check_graph(M(), (torch.randn(3),))
+
     def test_optional_tuple(self):
         with torch.library._scoped_library("mylib", "FRAGMENT") as lib:
             torch.library.define(
