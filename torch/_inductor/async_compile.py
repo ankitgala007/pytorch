@@ -58,6 +58,7 @@ from torch._inductor.runtime.compile_tasks import (
     _worker_compile_triton,
     _worker_compile_triton_thread,
 )
+from torch._inductor.runtime.runtime_utils import triton_cache_dir
 from torch._inductor.utils import clear_on_fresh_cache
 from torch._inductor.virtualized import V
 from torch._utils_internal import log_triton_builds
@@ -597,6 +598,14 @@ class AsyncCompile:
         if is_parallel:
             # Ensure libdevice path is set in os.environ before passing to workers
             _set_triton_libdevice_path()
+            # compile_on_one_rank kernels default TRITON_CACHE_DIR from the current
+            # device, which a forked compile worker can't query, so set it here.
+            coor = torch.compiler.config.compile_on_one_rank
+            if coor and os.environ.get("TRITON_CACHE_DIR") is None:
+                from torch._inductor.runtime.triton_heuristics import _resolve_load_device
+
+                if (device := _resolve_load_device(None, device_str)) is not None:
+                    os.environ["TRITON_CACHE_DIR"] = triton_cache_dir(device)
             # We want to support changing these env vars after (and while) the
             # process pool is running, so pass them to the subprocess to reset.
             env_vars = [
